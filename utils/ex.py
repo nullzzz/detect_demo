@@ -21,3 +21,5 @@ fields = {"pred_boxes": Boxes, "scores": torch.Tensor, "pred_classes": torch.Ten
 torchscipt_model = scripting_with_instances(model, fields)
 
 torch.jit.save(torchscipt_model, "model/jit_a.pth")
+
+# 提取缺陷

@@ -105,4 +105,4 @@ def to_coco(ann_dir, output_dir):
 
 
 if __name__ == "__main__":
-    to_coco("../fake_data/buffer", "../fake_data/buffer")
+    to_coco("../fake_data/buffer/c", "../fake_data/buffer/c")

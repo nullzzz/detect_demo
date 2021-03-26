@@ -7,10 +7,11 @@ import torch
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultPredictor
 from detectron2.structures import Instances
+import glob
 
 
 class Predictor:
-    def __init__(self, gpu: bool = True, thresh: float = 0.5, top: int = 3, **kwargs):
+    def __init__(self, gpu: bool = True, thresh: float = 0.0, top: int = 20, **kwargs):
         """
         初始化
         :param gpu: 是否使用gpu，True or False，默认使用
@@ -36,12 +37,19 @@ class Predictor:
             self.categories = categories
         else:
             self.categories = {
-                0: "dirt",
-                1: "gap",
-                2: "hair",
+                0: "hair",
+                1: "spot",
+                2: "dirt",
                 3: "scratch",
-                4: "black spot",
+                4: "other"
             }
+        self.color = {
+            0: (211, 209, 205),  # hair
+            1: (192, 53, 83),
+            2: (43, 115, 175),
+            3: (18, 161, 130),
+            4: (252, 195, 7),
+        }
 
         # 模型字典，键：工位 值：模型
         self.model_zoo: dict = {}
@@ -57,7 +65,7 @@ class Predictor:
         self.thresh = thresh
 
         # 按工位预加载预测模型
-        for i in ('C', 'A'):
+        for i in ("T", ):
             self.load_model(i)
 
         if kwargs.get("trim", True) is False:
@@ -65,7 +73,7 @@ class Predictor:
         else:
             self.extra_func = self.trim
 
-    def predict(self, image_path: str, station: str, display: bool = False, thresh: float = None,
+    def predict(self, image_path: str, station: str, display: bool = False, thresh: float = 0.2,
                 **kwargs) -> list:
         """
 
@@ -75,7 +83,6 @@ class Predictor:
         :param thresh: 置信度阈值
         :return:
         """
-        self.saved = kwargs.pop("save", self.saved)
 
         if thresh is not None:
             self.thresh = thresh
@@ -88,6 +95,8 @@ class Predictor:
                     return []
             else:
                 raise ValueError("Invalid File Path")
+        elif isinstance(image_path, np.ndarray):
+            image = image_path
         else:
             raise TypeError("Please input image path")
 
@@ -99,8 +108,14 @@ class Predictor:
         self.image = image
 
         station = station.upper()
+
+        categories = self.categories
         if station == "D":
             station = "A"
+        elif station.startswith("P"):
+            station = "P"
+            categories = {}
+
         # 使用对应工位模型
         model = self.model_zoo.get(station)
 
@@ -118,9 +133,6 @@ class Predictor:
             s: torch.Tensor
             c: torch.Tensor
 
-            if s < self.thresh or (idx == self.top and idx > 0):
-                break
-
             x1, y1, x2, y2 = b.cpu().numpy()
             score = s.cpu().numpy()
             cls = c.cpu().numpy()
@@ -132,27 +144,25 @@ class Predictor:
             score = float(score)
             cls = int(cls)
 
+            if score < self.thresh or (idx == self.top and idx > 0):
+                break
+
             self.boxes.append([x1, y1, x2, y2])
             self.scores.append(score)
             self.classes.append(cls)
 
         if display:
-            for (x1, y1, x2, y2), score, cls in zip(self.boxes, self.scores, self.classes):
-                cv2.rectangle(image, (x1, y1), (x2, y2), (0, cls * 64 % 256, 0), thickness=5)
-                cv2.putText(image, f"{self.categories[cls]}-{score:.2f}", (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 1,
-                            (255, 0, 0), 2)
+            self.draw()
             plt.imshow(image)
             plt.show()
 
         return self.get_result()
 
-    def show(self):
-        if self.image is None:
-            return
-        for x1, y1, x2, y2 in self.boxes:
-            cv2.rectangle(self.image, (x1, y1), (x2, y2), (0, 255, 0), thickness=5)
-        plt.imshow(self.image)
-        plt.show()
+    def draw(self):
+        for (x1, y1, x2, y2), score, cls in zip(self.boxes, self.scores, self.classes):
+            cv2.rectangle(self.image, (x1, y1), (x2, y2), self.color[cls], thickness=5)
+            cv2.putText(self.image, f"{self.categories.get(cls, cls)}|{score:.2f}", (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                        (255, 0, 0), 2)
 
     def save(self, path: str):
         """
@@ -195,18 +205,23 @@ class Predictor:
         cfg = get_cfg()
         cfg.merge_from_file(os.path.join(self.config_dir, "faster_rcnn_R_50_FPN_1x.yaml"))
 
+        num_classes = 5
         if station == 'C':
             model_path = "model_c.pth"
         elif station == 'A':
             model_path = "model_a.pth"
+
+        elif station == "P":
+            model_path = "model_p.pth"
         else:
-            model_path = "model_c.pth"
+            model_path = "model_t.pth"
+            num_classes = 4
         cfg.MODEL.WEIGHTS = os.path.join(self.model_dir, model_path)
         cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = (
             1
         )
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = thresh
-        cfg.MODEL.ROI_HEADS.NUM_CLASSES = 5
+        cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
 
         if self.gpu is False:
             cfg.MODEL.DEVICE = "cpu"
@@ -254,3 +269,13 @@ class Predictor:
                 break
 
         return img[y1:y2, x1:x2, :]
+
+
+if __name__ == "__main__":
+    predictor = Predictor()
+    base = r'/media/asus/E/test80'
+    pic_list = glob.glob(os.path.join(base, "*.bmp"))
+    for p in pic_list:
+        # if p == '/media/asus/E/test80/0216_ST0_PH5.bmp':
+        r = predictor.predict(p, station="P", display=True, thresh=0.0)
+        print(r)
